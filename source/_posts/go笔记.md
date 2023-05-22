@@ -1,7 +1,8 @@
 ---
 title: go笔记
 date: 2023-05-11 23:43:06
-tags: ['golang']
+tags: ['golang', 'private']
+# password: "hello"
 ---
 
 {% asset_img back.png 背景图片 %}
