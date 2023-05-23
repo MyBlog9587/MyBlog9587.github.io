@@ -1,6 +1,8 @@
 ---
 title: go笔记
 date: 2023-05-11 23:43:06
+categories:
+- go 
 tags: ['golang', 'private']
 # password: "hello"
 ---

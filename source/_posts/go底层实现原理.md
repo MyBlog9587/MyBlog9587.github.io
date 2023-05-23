@@ -1,6 +1,8 @@
 ---
 title: go底层实现原理
 date: 2023-05-11 17:23:03
+categories:
+- go
 tags: ['go', 'golang', 'private']
 ---
 
