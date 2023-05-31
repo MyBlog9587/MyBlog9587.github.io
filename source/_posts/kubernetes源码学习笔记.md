@@ -1,7 +1,7 @@
 ---
 title: kubernetes源码学习笔记
 date: 2023-05-23 16:47:20
-categories: [kebernetes, 源码]
+categories: [kubernetes, 源码]
 tags:
 - kubernetes
 - private

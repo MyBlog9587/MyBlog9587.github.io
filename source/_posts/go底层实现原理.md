@@ -337,7 +337,7 @@ type stringStruct struct {
 ## 复制
 复制操作也就是结构体的复制过程；并不会涉及底层字节数组的复制。
 
-<img src="./img/字符串布局.png" alt="string" style="zoom:100%;" />
+<img src="字符串布局.png" alt="string" style="zoom:100%;" />
 
 字符串虽然不是切片，但是支持切片操作，不同位置的切片底层访问的是同一块内存数据（因为字符串是只读的，所以相同的字符串面值常量通常对应同一个字符串常量）。
 
@@ -359,7 +359,7 @@ type SliceHeader struct {
 }
 ```
 
-<img src="./img/切片布局.png" alt="slice">
+<img src="切片布局.png" alt="slice">
 
 和数组一样，内置的 `len()` 函数返回切片中**有效**元素的长度，内置的 `cap()` 函数返回切片**容量**大小，容量必须大于或等于切片的长度.
 
@@ -465,7 +465,7 @@ type bmap struct {
 ```
 
 hmap 举例：
-<img src="./img/map 布局.png">
+<img src="map 布局.png">
 
 
 ## map 创建
@@ -668,7 +668,7 @@ type waitq struct {
 
 创建一个容量为 6 的，元素为 `int` 型的 `channel` `ch := make(chan int, 6)` 数据结构如下: 
 
-<img src="./img/chan 底层结构.png">
+<img src="chan 底层结构.png">
 
 
 最终创建 `chan` 的函数是 `makechan`：
