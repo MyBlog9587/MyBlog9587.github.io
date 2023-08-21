@@ -1,5 +1,5 @@
 ---
-title: go函数式-编程模式
+title: go编程模式:函数式
 date: 2023-06-16 15:52:56
 tags:
 - go
@@ -12,6 +12,8 @@ categories:
 
 
 ## demo
+
+如果有如下配置，需要创建一个 Server 对象
 
 ```go
 type Server struct {
@@ -46,6 +48,7 @@ func NewTLSServerWithMaxConnAndTimeout(addr string, port int, maxconns int, time
 
 因为Go语言不支持重载函数，所以，需要用不同的函数名来应对不同的配置选项, 就会变成下面繁重的调用：
 
+**整体代码如下：**
 ```go
 package main
 
@@ -55,6 +58,7 @@ import (
 	"time"
 )
 
+// 配置结构体
 type Server struct {
 	Addr     string
 	Port     int
@@ -64,6 +68,7 @@ type Server struct {
 	TLS      *tls.Config
 }
 
+// 配置函数
 func NewDefaultServer(addr string, port int) (*Server, error) {
 	return &Server{addr, port, "tcp", 30 * time.Second, 100, nil}, nil
 }
@@ -90,6 +95,7 @@ func main() {
 	}
 	timeout := 30 * time.Second
 
+	// 针对不同情况需要单独定义
 	s1, _ := NewDefaultServer(addr, port)
 	s2, _ := NewTLSServer(addr, port, &tls)
 	s3, _ := NewServerWithTimeout(addr, port, timeout)
@@ -106,6 +112,7 @@ func main() {
 把那些非必输的选项都移到一个结构体里
 
 ```go
+// 拆分配置 - 非必输的选项
 type Config struct {
     Protocol string
     Timeout  time.Duration
@@ -117,9 +124,11 @@ type Config struct {
 于是 Server 对象变成了：
 
 ```go
+// 主体
 type Server struct {
     Addr string
     Port int
+	// 可变配置
     Conf *Config
 }
 ```
@@ -130,9 +139,10 @@ func NewServer(addr string, port int, conf *Config) (*Server, error) {
     //...
 }
 
-//Using the default configuratrion
+// 使用默认配置项
 srv1, _ := NewServer("localhost", 9000, nil) 
 
+// 使用自定义配置项
 conf := Config{Protocol:"tcp", Timeout: 60*time.Duration}
 srv2, _ := NewServer("locahost", 9000, &conf)
 ```
@@ -140,6 +150,7 @@ srv2, _ := NewServer("locahost", 9000, &conf)
 这段代码算是不错了，大多数情况下，可能就止步于此了。但是其中有一点不好的是, Config 并不是必需的，所以，需要判断是否是 nil 或是 Empty 
 > Config{} 这让代码感觉还是有点不是很干净
 
+**完整代码如下：**
 ```go
 // 函数式编程demo
 package main
@@ -150,6 +161,7 @@ import (
 	"time"
 )
 
+// 拆分配置 - 非必输的选项
 type ServerConfig struct {
 	Protocol string
 	Timeout  time.Duration
@@ -157,12 +169,14 @@ type ServerConfig struct {
 	TLS      *tls.Config
 }
 
+// 主体
 type Server struct {
 	Addr string
 	Port int
 	Conf *ServerConfig
 }
 
+// 构造函数
 func NewServer(addr string, port int, conf *ServerConfig) (*Server, error) {
 	s := Server{
 		Addr: addr,
@@ -175,7 +189,10 @@ func NewServer(addr string, port int, conf *ServerConfig) (*Server, error) {
 func main() {
 	conf := ServerConfig{Protocol: "tcp", Timeout: 60 * time.Second}
 
+	// 使用默认配置项
 	s1, _ := NewServer("localhost", 9000, nil)
+
+	// 使用自定义配置项
 	s2, _ := NewServer("locahost", 9000, &conf)
 
 	// s1: &{Addr:localhost Port:9000 Conf:<nil>}      s2: &{Addr:locahost Port:9000 Conf:0xc000098660}
@@ -242,6 +259,7 @@ func (sb *ServerBuilder) Build() Server {
 }
 
 func main() {
+	// 使用链式的方式创建对象
 	sb := ServerBuilder{}
 	server := sb.Create("127.0.0.1", 8080).
 		WithProtocol("udp").
@@ -295,20 +313,19 @@ func TLS(tls *tls.Config) Option {
 
 ```go
 func NewServer(addr string, port int, options ...func(*Server)) (*Server, error) {
-
-  srv := Server{
-    Addr:     addr,
-    Port:     port,
-    Protocol: "tcp",
-    Timeout:  30 * time.Second,
-    MaxConns: 1000,
-    TLS:      nil,
-  }
-  for _, option := range options {
-    option(&srv)
-  }
-  //...
-  return &srv, nil
+	srv := Server{
+		Addr:     addr,
+		Port:     port,
+		Protocol: "tcp",
+		Timeout:  30 * time.Second,
+		MaxConns: 1000,
+		TLS:      nil,
+	}
+	for _, option := range options {
+		option(&srv)
+	}
+	//...
+	return &srv, nil
 }
 ```
 
@@ -374,6 +391,7 @@ func NewServer(addr string, port int, options ...func(*Server)) (*Server, error)
 		Maxconns: 1000,
 		TLS:      nil,
 	}
+	// 循环配置
 	for _, option := range options {
 		option(&srv)
 	}
@@ -381,8 +399,11 @@ func NewServer(addr string, port int, options ...func(*Server)) (*Server, error)
 }
 
 func main() {
+	// 默认
 	s1, _ := NewServer("localhost", 1024)
+	// 使用函数式编程
 	s2, _ := NewServer("localhost", 2048, Protocol("udp"))
+	// 使用函数式编程
 	s3, _ := NewServer("0.0.0.0", 8080, Timeout(300*time.Second), MaxConns(1000))
 
 	// s1: &{Addr:localhost Port:1024 Protocol:tcp Timeout:30s Maxconns:1000 TLS:<nil>}
@@ -394,5 +415,5 @@ func main() {
 
 
 
-
+> 参考：https://coolshell.cn/articles/21146.html
 
