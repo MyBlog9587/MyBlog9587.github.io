@@ -108,10 +108,13 @@ theme: fluid
 deploy:
   # type: ''
   type: git
-  repo: https://github.com/SunCodingUp/SunCodingup.github.io.git
-  # repo: git@github.com:SunCodingUp/SunCodingup.github.io.git
+  # repo: https://github.com/MyBlog9587/MyBlog9587.github.io.git
+  repo: git@github-blog:MyBlog9587/MyBlog9587.github.io.git
+  # repo: https://github.com/SunCodingUp/SunCodingup.github.io.git
   branch: main
-  token: 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
+  # token: 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
+  token: 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
+  # token: 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
 
 # Security
 encrypt: # hexo-blog-encrypt

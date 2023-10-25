@@ -211,7 +211,7 @@ func SoftDeleteById(ctx context.Context, tx *gorm.DB, tableName string, id int64
 	table := s_feedback{}
 	tx.Table(tableName).WithContext(ctx).Where("eid = ?", eid).Delete(&table)	
 }
-
+```
 
 
 
@@ -717,7 +717,8 @@ DB.Scopes(TableOfYear(user, 2020)).Find(&users) // SELECT * FROM users_2020;
 
 
 # 异常汇总：
-## demo 代码如下：
+## 结构体标签使用错误：
+### demo 代码如下：
 
 ```go 	
 package main
@@ -923,7 +924,7 @@ ERROR: column "severity" of relation "s_rule" does not exist (SQLSTATE 42703)
 
 是因为将 FormJson 内容进行了展开，并追加到了 sql 语句中，导致了异常。
 
-## 修复方法1:
+### 修复方法1:
 问题出现的原因是 gorm 标签的使用不正确。在结构体 PolicyInfo 中，FormJson 字段的 gorm 标签声明在了错误的位置，导致其后面的字段都被认为是 FormJson 的子字段。
 
 要解决这个问题，需要将 gorm 标签放置在结构体字段定义的后面，并且确保标签的格式正确。以下是修复后的代码示例：
@@ -953,7 +954,7 @@ type PolicyInfo struct {
 
 
 
-## 修复方法2:
+### 修复方法2:
 在创建记录时，GORM 会自动将结构体中的所有字段都写入 SQL 中。要达到你想要的效果（只插入选定的字段），你可以使用 Select 方法指定要插入的字段
 通过使用 Select 方法，在 SQL 中插入的字段将只包括所指定的字段，而不会在 open_close_time 后面追加其他字段。
 ```go
@@ -963,6 +964,83 @@ type PolicyInfo struct {
 		Create(&rule_info)
 ```
 
+### 使用gen 生成代码框架，然后操作中使用生成的数据结构
 
+
+## 更新零值问题：
+
+```go
+type SAssetIP struct {
+	ID          int64          `gorm:"column:id;primaryKey;autoIncrement:true" json:"id"`
+	Eid         string         `gorm:"column:eid;not null;comment:企业sn" json:"eid"`                           // 企业sn
+	ProxyID     string         `gorm:"column:proxy_id;not null;comment:proxy sn" json:"proxy_id"`             // proxy sn
+	AssetIP     string         `gorm:"column:asset_ip;not null;comment:资产ip，即表示ip地址(ip或ip段)" json:"asset_ip"` // 资产ip，即表示ip地址(ip或ip段)
+	AssetType   string         `gorm:"column:asset_type;not null;comment:资产类别" json:"asset_type"`             // 资产类别
+	Place       string         `gorm:"column:place;comment:位置" json:"place"`                                  // 位置
+	DiscoverWay int16          `gorm:"column:discover_way;not null;comment:来源，1手动添加，2发现" json:"discover_way"` // 来源，1手动添加，2发现
+	Contacts    string         `gorm:"column:contacts;comment:联系人" json:"contacts"`                           // 联系人
+	Phone       string         `gorm:"column:phone;comment:联系方式" json:"phone"`                                // 联系方式
+	Status      int16          `gorm:"column:status;not null;comment:当前状态 1 未接入 2 接入成功" json:"status"`        // 当前状态 1 未接入 2 接入成功
+	IsMajor     bool           `gorm:"column:is_major;not null;comment:是否重点资产" json:"is_major"`               // 是否重点资产
+	CreatedAt   time.Time      `gorm:"column:created_at;not null;comment:创建时间" json:"created_at"`             // 创建时间
+	UpdatedAt   time.Time      `gorm:"column:updated_at;comment:修改时间" json:"updated_at"`                      // 修改时间
+	AssetName   string         `gorm:"column:asset_name;not null;comment:资产名称" json:"asset_name"`             // 资产名称
+	DeletedAt   gorm.DeletedAt `gorm:"column:deleted_at" json:"deleted_at"`
+}
+
+
+func UpdateAssetInfoById(ctx context.Context, info *models.SAssetIP) error {
+	if err := ds.db.Table(models.TableNameSAssetIP).WithContext(ctx).Where("id = ?", info.ID).Updates(info); err.Error != nil {
+		return err.Error
+	}
+	return nil
+}
+
+info := &models.SAssetIP{
+	ID: 19712170,
+	Eid: '8211419A-5BDD-11EC-A457-F60242D1C7A8',
+	ProxyId:'360bjyt',
+	IsMajor:false,
+	AssetIp:'10.209.2.153',
+	AssetType: 'sdf1fa',
+	Contacts:'xxxx',
+	UpdatedAt:'2023-08-31 17:43:40.442',
+	AssetName:'11sdfsf'
+
+}
+```
+
+数据值为 info, 但是更新sql 缺少了 IsMajor 维度，执行结果如下：
+```sql
+  UPDATE "s_asset_ip" SET "eid"='8211419A-5BDD-11EC-A457-F60242D1C7A8',"proxy_id"='360bjyt',"asset_ip"='10.209.2.153',"asset_type"='sdf1fa',"contacts"='xxxx',"updated_at"='2023-08-31 17:43:40.442',"asset_name"='11sdfsf' WHERE id = 19712170 AND "s_asset_ip"."deleted_at" IS NULL AND "id" = 19712170
+```
+
+gorm在执行Updates时,如果结构体字段值为默认值,即零值,则会跳过该字段不更新。这里info中的IsMajor字段为false,是bool类型的零值,因此Updates执行时被跳过了
+
+要解决这个问题,我们可以有两种方法:
+1. 使用Select仅选择要更新的字段:
+```go
+db.Table("s_asset_ip").
+  Select("eid", "proxy_id", "is_major").
+  Where("id = ?", id).
+  Updates(info)
+```
+
+2. 构建更新的map,避免零值字段:
+
+```go
+updateMap := map[string]interface{}{
+  "eid": info.Eid,
+  "proxy_id": info.ProxyID,
+}
+
+if info.IsMajor {
+  updateMap["is_major"] = info.IsMajor 
+}
+
+db.Model(&SAssetIP{}).Where("id = ?", id).Updates(updateMap)
+```
+
+> GORM 的 `Create` 方法,它会插入模型的**全部字段,不会忽略零值**
 
 
