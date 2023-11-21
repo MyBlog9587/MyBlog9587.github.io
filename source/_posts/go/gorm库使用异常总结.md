@@ -1044,3 +1044,548 @@ db.Model(&SAssetIP{}).Where("id = ?", id).Updates(updateMap)
 > GORM 的 `Create` 方法,它会插入模型的**全部字段,不会忽略零值**
 
 
+## gorm json类型字段
+### 查询匹配
+```sql
+CREATE TABLE light.s_proxy_node (
+    id int8 NOT NULL DEFAULT nextval('s_data_source_nodes_id_seq'::regclass),
+    node_id varchar(32) NOT NULL DEFAULT ''::character varying,
+    ext jsonb NULL,
+    created_at timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP(0),
+    updated_at timestamp NULL,
+    deleted_at timestamp NULL
+);
+```
+其中 ext 是jsonb类型
+```json
+{
+    "os":"windows",
+    "type":7,
+    "channel":"sdns",
+    "ip_list":{
+        "10.18.191.83":"84:2a:fd:3b:6d:45",
+        "192.168.137.1":"9e:bf:c0:0f:79:9d"
+    },
+    "os_info":"Microsoft Windows 10 Pro",
+    "run_mod":4,
+    "version":"2.6.0",
+    "cpu_arch":"amd64",
+    "hostname":"5CG026B3ZM",
+    "master_ip":{
+        "10.18.191.83":"84:2a:fd:3b:6d:45"
+    },
+    "uid_source":null
+}
+```
+
+
+### 过滤检索
+想要对 ext 进行过滤匹配：(借助 `->>` 指定成员)
+```go
+    tx = tx.Where("ext->>'hostname' like ? or ext->>'ip_list' like ?", likeKey, likeKey)
+```
+
+
+```go
+func ListRecordNodeRaw(ctx context.Context, eid, uid, key string, lType int16, page, size int) ([]*models.SProxyNode, int64, error) {
+    var ret = make([]*models.SProxyNode, 0)
+    tx := ds.db.WithContext(ctx).Table(models.TableNameSProxyNode).Where("eid", eid).Where("uid", uid).Where("type", lType)
+    if len(key) != 0 {
+        likeKey := fmt.Sprintf("%%%s%%", key)
+        tx = tx.Where("ext->>'hostname' like ? or ext->>'ip_list' like ?", likeKey, likeKey)
+    }
+    var count int64
+    tx = tx.Count(&count)
+    if page <= 0 {
+        page = 1
+    }
+    if size <= 0 {
+        size = 10
+    }
+    tx = tx.Limit(size).Offset((page - 1) * size)
+    err := tx.Order("last_alive_time desc").Find(&ret).Error
+    if err != nil {
+        return nil, count, err
+    }
+    return ret, count, nil
+}
+```
+
+
+### 输出指定成员
+查询成员作为输出：(借助 `->>` 指定成员)
+
+```go
+    Select("ext->>'ip_list'")
+```
+
+
+```go
+func GetIpListByEidAndType(ctx context.Context, eid string, typeId int) (map[string]string, error) {
+    var ipList []string
+
+
+    tx := ds.db.Table(models.TableNameSProxyNode).
+        WithContext(ctx).
+        Select("ext->>'ip_list'").
+        Where("eid = ?", eid).
+        Where("type = ?", typeId).
+        Find(&ipList)
+
+
+    if tx.Error != nil {
+        if tx.Error == gorm.ErrRecordNotFound {
+            return nil, nil
+        }
+        return nil, tx.Error
+    }
+    // IPv4:IPv6
+    var dns map[string]string
+    for _, item := range ipList {
+        if err := json.Unmarshal([]byte(item), &dns); err != nil {
+            return nil, err
+        }
+    }
+    return dns, nil
+}
+```
+
+
+
+## select 追加
+```go
+func GetMapGeo(ctx context.Context, tx *gorm.DB,dimensionality string, opts []biz.BaseOption) ([]*pb.GeoAttributionInfo, error) {
+    db := tx.Table(models.TableNameQueryGeographicalStatus).WithContext(ctx)
+    for _, opt := range opts {
+        db = opt(db)
+    }
+
+
+    var (
+        result = make([]*pb.GeoAttributionInfo, 0,10)
+    )
+
+
+    // 创建动态赋值
+    switch dimensionality {
+    case "city":
+        db = db.Select("cl_city as client_geo, rd_city as rdata_geo")
+    case "province":
+        db = db.Select("cl_province as client_geo, rd_province as rdata_geo")
+    case "country":
+        db = db.Select("cl_country as client_geo, rd_country as rdata_geo")
+    default:
+        return nil, fmt.Errorf("GetMapGeo dimensionality 参数异常：%s\n", dimensionality)
+    }
+
+
+    // 构建sql
+    err := db.Select(
+        "max(cl_latitude) AS client_latitude, max(cl_longitude) AS client_longitudesum(pv) AS count_pv",
+        ).Group("client_geo, rdata_geo").Order("client_geo desc").Offset(0).Limit(10).Find(&result)
+    if err != nil && gorm.ErrRecordNotFound != err.Error {
+        return nil, err.Error
+    }
+
+
+    return result, nil
+}
+```
+
+
+上述利用gorm 框架查询数据库，为什么两次db.Select后，后者会将前者覆盖，如果想追加该如何修改。期望查询语句为：
+```SQL
+select cl_city as client_geo, rd_city as rdata_geo, max(cl_latitude) AS client_latitude, ...
+```
+
+
+Gorm 的 Select 方法接收一个 interface{} 参数，如果你传入一个 string 类型，它会将这个字符串直接作为查询的参数；但是如果你传入一个 []string 类型的切片，它会将切片的每个元素作为一个独立的查询参数。我们可以利用这个特性，将所有需要查询的字段放在一个切片中，然后一次性传入 Select 方法，达到字段选择追加的效果。
+```go
+func GetMapGeo(ctx context.Context, tx *gorm.DB, dimensionality string, opts []biz.BaseOption) ([]*pb.GeoAttributionInfo, error) {
+    db := tx.Table(models.TableNameQueryGeographicalStatus).WithContext(ctx)
+    for _, opt := range opts {
+        db = opt(db)
+    }
+
+
+    var result = make([]*pb.GeoAttributionInfo, 0, 10)
+
+
+    var selectFields []string
+
+
+    // 根据 dimensionality 参数的值选择要查询的字段
+    switch dimensionality {
+    case "city":
+        selectFields = append(selectFields, "cl_city as client_geo", "rd_city as rdata_geo")
+    case "province":
+        selectFields = append(selectFields, "cl_province as client_geo", "rd_province as rdata_geo")
+    case "country":
+        selectFields = append(selectFields, "cl_country as client_geo", "rd_country as rdata_geo")
+    default:
+        return nil, fmt.Errorf("GetMapGeo dimensionality 参数异常：%s\n", dimensionality)
+    }
+
+
+    // 添加其他需要查询的字段
+    selectFields = append(selectFields, "max(cl_latitude) AS client_latitude", "max(cl_longitude) AS client_longitude","sum(pv) AS count_pv" )
+
+
+    err := db.Select(selectFields).Group("client_geo, rdata_geo").Order("client_geo desc").Offset(0).Limit(10).Find(&result)
+    if err != nil && gorm.ErrRecordNotFound != err.Error {
+        return nil, err.Error
+    }
+
+
+    return result, nil
+}
+```
+
+
+或者
+```go
+var selectExpr string
+
+
+switch dimensionality {
+case "city":
+    selectExpr = "cl_city as client_geo, rd_city as rdata_geo"
+case "province":
+    selectExpr = "cl_province as client_geo, rd_province as rdata_geo"
+case "country":
+    selectExpr = "cl_country as client_geo, rd_country as rdata_geo"
+
+
+}
+
+
+var result = make([]*pb.GeoAttributionInfo, 0,10)
+err := db.Select(
+       selectExpr,
+       "max(cl_latitude) AS client_latitude, max(cl_longitude) AS client_longitude, max(rd_latitude) AS rdata_latitude,max(rd_longitude) AS rdata_longitude, sum(countpv) AS count_pv",
+       ).Group("client_geo, rdata_geo").Order("client_geo desc").Offset(0).Limit(10).Find(&result)
+if err.Error != nil && gorm.ErrRecordNotFound != err.Error {
+       return nil, err.Error
+}
+```
+
+
+## 预编译的逻辑
+
+
+## 参数化查询
+
+
+
+
+## sql 注入
+针对于 `db.Where("name = ?", userName).Find(&users)`， 其中的 userName 值为： `if(1==1, user(),"other")`，这种情况如何防止sql注入
+
+
+## 查询时间带时区问题
+```go
+func GetEventDetail(ctx context.Context,tx *gorm.DB, opts ...biz.BaseOption) ([]*pb.MetricEventDetail, error) {
+  rs := make([]*pb.MetricEventDetail, 0, 5)
+
+
+  db := tx.Table(biz.TableIoc).WithContext(ctx)
+  for _, opt := range opts {
+    db = opt(db)
+  }
+
+
+  var selectFields []string
+  selectFields = append(
+    selectFields,
+    "tnow",
+    "localAddress as LocalAddress",
+    "firstQueryName as FirstQueryName",
+    "dictGet('s_data_uid', 'name', tuple(uid)) as name",
+    "dictGet('s_threat_tag_mapping_join_parent', 'cat1', tuple(toInt64(mappingid))) as type",
+  )
+
+
+  result := db.Select(selectFields).Limit(5).Find(&rs)
+  if result.Error != nil {
+    logx.Errorf("GetEventDetail err:%v", result.Error)
+    return nil, status.Errorf(code.ErrDatabaseOpt, code.String(code.ErrDatabaseOpt))
+  }
+  return rs, nil
+}
+```
+返回的tnow 时间格式是:'2023-11-12T12:08:38+08:00', 期望格式: '2023-11-12T12:08:38'，应该如何实现时间输出格式自定义：
+
+
+```go
+  selectFields = append(
+    selectFields,
+    "formatDateTime(tnow, '%Y-%m-%d %R:%S') as Tnow", // 使用 FORMAT 函数控制时间格式
+    "localAddress as LocalAddress",
+    "firstQueryName as FirstQueryName",
+    "dictGet('s_data_uid', 'name', tuple(uid)) as name",
+    "dictGet('s_threat_tag_mapping_join_parent', 'cat1', tuple(toInt64(mappingid))) as type",
+  )
+```
+
+
+## 利用interface实现通用查询接口查询
+
+
+- 利用 BaseQueryRequest 传入整体查询条件
+- BaseQuery 利用 interface{} 接收响应结果返回
+
+
+```go
+type BaseQueryRequest struct {
+    tx *gorm.DB
+    table string
+    selectFields []string
+    opts []biz.BaseOption
+    group string
+    order string
+    offset int
+    limit int
+}
+
+
+func GetSecurityPv (ctx context.Context,tx *gorm.DB, opts ...biz.BaseOption) ([]*pb.SeverityLevel, error) {
+    rs := make([]*pb.SeverityLevel, 0, 4)
+    request := &BaseQueryRequest{
+        tx:           tx,
+        table:        biz.TableCdns,
+        selectFields: []string{
+            "domainSecurityType as key",
+            "uniqExact(uid,localAddress) as value",
+        },
+        opts: opts,
+        group: "key with cube",
+    }
+    
+    // 注意 rs 用指针
+    err := ds.BaseQuery(ctx, request,&rs, opts)
+    if err != nil {
+        return nil, err
+    }
+    return rs, nil
+}
+
+
+func BaseQuery (ctx context.Context, base *BaseQueryRequest, rs interface{}, opts []biz.BaseOption) (err error) {
+    if base == nil {
+        return status.Errorf(code.ErrParamParse, code.String(code.ErrParamParse))
+    }
+    db := base.tx.Table(base.table).WithContext(ctx)
+    for _, opt := range opts {
+        db = opt(db)
+    }
+
+
+    db = db.Select(base.selectFields)
+    if len(base.group) != 0 {
+        db = db.Group(base.group)
+    }
+
+
+    if len(base.order) != 0 {
+        db = db.Order(base.order)
+    }
+
+
+    if base.offset != 0 {
+        db = db.Offset(base.offset)
+    }
+
+
+    if base.limit != 0 {
+        db = db.Limit(base.limit)
+    }
+
+
+    result := db.Find(rs)
+    if result.Error != nil {
+        logx.Errorf("BaseQuery err:%v", result.Error)
+        return  status.Errorf(code.ErrDatabaseOpt, code.String(code.ErrDatabaseOpt))
+    }
+    return nil
+}
+```
+
+最终请求：
+```sql
+SELECT domainSecurityType as key,uniqExact(uid,localAddress) as value FROM `cdns_log` WHERE (toYYYYMMDD(tnow) BETWEEN 20231112 AND 20231113) AND source = 'C6ADCD26-E63B-11EC-BC53-B62BBA637A35' AND (tnow BETWEEN '2023-11-12 12:08:07' AND '2023-11-13 12:08:07') AND domainSecurityType != 0 GROUP BY key with cube
+```
+
+## go 空指针
+
+```go
+    result := make([]*pb.GeoSort, len(rs))
+    for i, action := range rs{
+        ruleName, err := bz.repo.GetRuleEnumList(ctx, RuleWithID(int32(action.Key)))
+        if err != nil {
+            result[i].Name = strconv.Itoa(int(action.Key))
+        } else {
+            result[i].Name = ruleName[0].Zh
+        }
+        result[i].Value = action.Value
+    }
+```
+赋值时 result[i] 为空指针，因为使用 make 创建了一个切片，切片的元素是结构体类型，那么这个切片中的元素是零值，如果直接通过 result[i] 访问某个位置的元素，而这个位置还没有被初始化，就会导致空指针错误。
+
+在使用 make 创建切片后，应该使用 `result[i] = &pb.GeoSort{}` 等语句为切片中的每个元素分配内存
+```go
+result := make([]*pb.GeoSort, len(rs))
+for i, action := range rs {
+    result[i] = &pb.GeoSort{} // 为切片中的每个元素分配内存
+    ruleName, err := bz.repo.GetRuleEnumList(ctx, RuleWithID(int32(action.Key)))
+    if err != nil {
+        result[i].Name = strconv.Itoa(int(action.Key))
+    } else {
+        result[i].Name = ruleName[0].Zh
+    }
+    result[i].Value = action.Value
+}
+```
+
+
+## find 切片参数异常：
+```go
+type BaseOption func(*gorm.DB) *gorm.DB
+
+
+func BaseWithEID(eid string) BaseOption {
+    return func(db *gorm.DB) *gorm.DB {
+        return db.Where("source = ?", eid)
+    }
+}
+
+
+
+
+func BaseQuery (ctx context.Context, base *BaseQueryRequest, rs interface{},opts []biz.BaseOption) (err error) {
+    db := base.tx.Table(base.table).WithContext(ctx)
+    for _, opt := range opts {
+        db = opt(db)
+    }
+
+
+    db = db.Select(base.selectFields)
+    
+    result := db.Find(rs)
+    if result.Error != nil {
+        return result.Error
+    }
+    return nil
+}
+
+
+func GetEventIds(ctx context.Context, tx *gorm.DB, opts []biz.BaseOption) ([]uint64, error) {
+    var rs = make([]uint64, 0, 100)
+    request := &BaseQueryRequest{
+        tx:           tx,
+        table:        "table_name",
+        selectFields: []string{
+            "groupUniqArray(event_id) AS ids",
+        },
+        opts: opts,
+    }
+
+
+    err := ds.BaseQuery(ctx, request,&rs, opts)
+    if err != nil {
+        return nil, err
+    }
+    return rs, nil
+}
+
+
+
+
+func main(){
+    // database init
+    var tx *gorm.DB
+    tx = initDB()
+    ...
+
+
+    opts := make([]BaseOption, 0,10)
+    opts = append(opts, BaseWithEID(eid))
+    
+    ids, err := GetEventIds(context.Background(), tx, opts)
+    ...
+}
+```
+将 `var rs = make([]uint64, 0, 100)` 传给 `BaseQuery` 的 rs 参数时，gorm 的 `find` 返回异常：
+`sql: Scan error on column index 0, name "ids": converting driver.Value type []uint64 ("[23267 23466...`
+
+
+解决办法：
+
+
+利用结构体完成，因为 find 需要一个 interface{}，但是提供了一个切片，所以用结构体替代
+```go
+func GetEventIds(ctx context.Context, tx *gorm.DB, opts []biz.BaseOption) ([]uint64, error) {
+    //var rs = make([]uint64, 0, 100)
+    type EventIDResult struct {
+        Item []uint64 `gorm:"column:ids"`
+    }
+    var rs EventIDResult
+    request := &BaseQueryRequest{
+        tx:           tx,
+        table:        models.TableNameSEventOrder,
+        selectFields: []string{
+            "groupUniqArray(event_id) AS ids",
+        },
+        opts: opts,
+    }
+
+
+    err := ds.BaseQuery(ctx, request, &rs, opts)
+    if err != nil {
+        return nil, err
+    }
+    return rs.Item, nil
+}
+```
+
+## `[error] unsupported data type: &[]`
+```go
+func GetEventIds(ctx context.Context, tx *gorm.DB, opts []biz.BaseOption) ([]uint64, error) {
+    type EventIDResult struct {
+        Item []uint64 `gorm:"column:ids"`
+    }
+    var rs EventIDResult
+    request := &BaseQueryRequest{
+        tx:           tx,
+        table:        models.TableNameSEventOrder,
+        selectFields: []string{
+            "groupUniqArray(event_id) AS ids",
+        },
+        opts: opts,
+    }
+
+
+    err := ds.BaseQuery(ctx, request, &rs, opts)
+    if err != nil {
+        return nil, err
+    }
+    return rs.Item, nil
+}
+
+
+func BaseQuery (ctx context.Context, base *BaseQueryRequest, rs interface{},opts []biz.BaseOption) (err error) {
+    db := base.tx.Table(base.table).WithContext(ctx)
+    for _, opt := range opts {
+        db = opt(db)
+    }
+
+
+    db = db.Select(base.selectFields)
+    
+    result := db.Find(rs)
+    if result.Error != nil {
+        return result.Error
+    }
+    return nil
+}
+```
+利用gorm 执行 BaseQuery 的 find 是提示：`[error] unsupported data type: &[]`

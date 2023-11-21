@@ -107,10 +107,9 @@ theme: fluid
 ## Docs: https://hexo.io/docs/one-command-deployment
 deploy:
   type: git
-  # repo: https://github.com/MyBlog9587/MyBlog9587.github.io.git
   repo: git@github.com:MyBlog9587/MyBlog9587.github.io.git
   branch: main
-  token: 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
+  token: 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
 
 # Security
 encrypt: # hexo-blog-encrypt
